@@ -1,0 +1,6 @@
+{
+  "name": "Library Book Tracking System",
+  "description": "A modern library management system demonstrating core Data Structures (Array, Linked List, Queue) with book tracking, issue/return flows, student management, queueing, animated visualizers, and analytical reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
