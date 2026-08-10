@@ -24,7 +24,8 @@ import {
   MapPin,
   Clock,
   Camera,
-  CameraOff
+  CameraOff,
+  RotateCcw
 } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { BarcodeRfidTag, playScannerBeep } from '../common/BarcodeRfidTag';
@@ -41,6 +42,7 @@ export const BarcodeRfidView: React.FC = () => {
 
   // Optical Camera Scanner State
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -78,21 +80,67 @@ export const BarcodeRfidView: React.FC = () => {
     };
   }, []);
 
-  const startCamera = async () => {
+  // Ensure video element receives srcObject once mounted in DOM
+  useEffect(() => {
+    if (isCameraActive && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [isCameraActive]);
+
+  const startCamera = async (targetFacing: 'environment' | 'user' = 'environment') => {
+    // Stop any active stream first
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+      let stream: MediaStream | null = null;
+      // Array of constraints from ideal back camera down to generic fallback
+      const constraintsList = [
+        { video: { facingMode: { exact: targetFacing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { video: { facingMode: { ideal: targetFacing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { video: { facingMode: targetFacing } },
+        { video: true }
+      ];
+
+      for (const constraint of constraintsList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraint);
+          if (stream) break;
+        } catch (e) {
+          // Fall through to next fallback constraint
+        }
+      }
+
+      if (!stream) {
+        throw new Error('Could not access camera video stream');
+      }
+
       streamRef.current = stream;
+      setFacingMode(targetFacing);
+      setIsCameraActive(true);
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
       }
-      setIsCameraActive(true);
-      addToast('Webcam initialized for optical QR code scanning', 'info', 'Camera Active');
+
+      addToast(
+        `Camera initialized (${targetFacing === 'environment' ? 'Rear / Back Camera' : 'Front Camera'})`,
+        'info',
+        'Camera Active'
+      );
     } catch (err) {
-      addToast('Could not open webcam feed. Please allow camera permissions or use interactive QR cards.', 'error', 'Camera Error');
+      console.error('Camera start error:', err);
+      addToast('Could not open back camera feed. Please check camera permissions or try switching camera.', 'error', 'Camera Error');
     }
+  };
+
+  const toggleCameraFacing = () => {
+    const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
+    startCamera(nextFacing);
   };
 
   const stopCamera = () => {
@@ -339,13 +387,25 @@ export const BarcodeRfidView: React.FC = () => {
                     <div className="w-6 h-6 sm:w-10 sm:h-10 border-b-2 border-r-2 border-blue-400 absolute bottom-0 right-0" />
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={stopCamera}
-                    className="absolute top-2 right-2 px-2.5 py-1 bg-slate-900/90 hover:bg-slate-900 text-[11px] font-mono text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 z-30 shadow-md"
-                  >
-                    <CameraOff className="w-3 h-3 text-red-400" /> Close Camera
-                  </button>
+                  <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-30">
+                    <button
+                      type="button"
+                      onClick={toggleCameraFacing}
+                      className="px-2.5 py-1 bg-slate-900/90 hover:bg-slate-900 text-[11px] font-mono text-blue-300 rounded-lg border border-slate-700 flex items-center gap-1 shadow-md"
+                      title="Switch between Rear/Back and Front Camera"
+                    >
+                      <RotateCcw className="w-3 h-3 text-blue-400" />
+                      <span>Flip ({facingMode === 'environment' ? 'Rear' : 'Front'})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={stopCamera}
+                      className="px-2.5 py-1 bg-slate-900/90 hover:bg-slate-900 text-[11px] font-mono text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 shadow-md"
+                    >
+                      <CameraOff className="w-3 h-3 text-red-400" /> Close Camera
+                    </button>
+                  </div>
 
                   <div className="absolute bottom-2 left-2 right-2 z-30 text-center">
                     <button
