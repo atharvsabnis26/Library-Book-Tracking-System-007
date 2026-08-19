@@ -25,7 +25,10 @@ import {
   Clock,
   Camera,
   CameraOff,
-  RotateCcw
+  RotateCcw,
+  History,
+  Barcode,
+  Trash2
 } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { BarcodeRfidTag, playScannerBeep } from '../common/BarcodeRfidTag';
@@ -50,6 +53,32 @@ export const BarcodeRfidView: React.FC = () => {
   const [scannedBook, setScannedBook] = useState<Book | null>(null);
   const [scannedStudent, setScannedStudent] = useState<Student | null>(null);
   const [activeTxnForBook, setActiveTxnForBook] = useState<Transaction | null>(null);
+
+  // Recent Scans State (Last 5 processed barcodes/tags)
+  const [recentScans, setRecentScans] = useState<Array<{
+    id: string;
+    code: string;
+    title: string;
+    subtitle: string;
+    type: 'book' | 'student';
+    scanMode: 'barcode' | 'rfid' | 'qrcode';
+    timestamp: string;
+    badge?: string;
+  }>>(() => {
+    return books.slice(0, 3).map((book, idx) => ({
+      id: `init-scan-${book.id}-${idx}`,
+      code: book.barcode || book.isbn || book.id,
+      title: book.title,
+      subtitle: `${book.author} • ${book.category}`,
+      type: 'book' as const,
+      scanMode: 'barcode' as const,
+      timestamp: new Date(Date.now() - (idx + 1) * 3 * 60 * 1000).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      badge: book.locationRack || 'Cataloged'
+    }));
+  });
 
   // Bulk RFID Rack Audit State
   const [selectedRack, setSelectedRack] = useState('A1-R02');
@@ -199,11 +228,37 @@ export const BarcodeRfidView: React.FC = () => {
         const activeTxn = transactions.find(t => t.bookId === matchedBook.id && t.status === 'Active');
         setActiveTxnForBook(activeTxn || null);
         addToast(`Scanned Book via ${scannerMode.toUpperCase()}: "${matchedBook.title}"`, 'success', 'Scan Success');
+
+        // Record in recent scans list (keep last 5)
+        const newRecord = {
+          id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          code: matchedBook.barcode || matchedBook.isbn || targetCode,
+          title: matchedBook.title,
+          subtitle: `${matchedBook.author} • ${matchedBook.category}`,
+          type: 'book' as const,
+          scanMode: scannerMode,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          badge: matchedBook.locationRack || 'Cataloged'
+        };
+        setRecentScans(prev => [newRecord, ...prev.filter(item => item.code.toLowerCase() !== newRecord.code.toLowerCase())].slice(0, 5));
       } else if (matchedStudent) {
         setScannedStudent(matchedStudent);
         setScannedBook(null);
         setActiveTxnForBook(null);
         addToast(`Scanned Student Library QR Card: "${matchedStudent.name}"`, 'success', 'Student Identified');
+
+        // Record in recent scans list (keep last 5)
+        const newRecord = {
+          id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          code: matchedStudent.barcode || matchedStudent.id || targetCode,
+          title: matchedStudent.name,
+          subtitle: `${matchedStudent.department} • ${matchedStudent.id}`,
+          type: 'student' as const,
+          scanMode: scannerMode,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          badge: matchedStudent.year || 'Student'
+        };
+        setRecentScans(prev => [newRecord, ...prev.filter(item => item.code.toLowerCase() !== newRecord.code.toLowerCase())].slice(0, 5));
       } else {
         addToast(`No book or student found matching identifier: "${clean}"`, 'error', 'Unrecognized Code');
       }
@@ -488,6 +543,85 @@ export const BarcodeRfidView: React.FC = () => {
                 </button>
               </div>
             </form>
+
+            {/* Recent Scans Scrollable List */}
+            <div className="mt-4 pt-3.5 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                    Recent Scans
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                    {recentScans.length}/5
+                  </span>
+                </div>
+                {recentScans.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setRecentScans([])}
+                    className="text-[11px] font-medium text-slate-400 hover:text-red-500 dark:hover:text-red-400 transition-colors flex items-center gap-1"
+                    title="Clear recent scan history"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
+
+              {recentScans.length === 0 ? (
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700/80 text-center text-xs text-slate-400 font-mono">
+                  No barcodes scanned yet
+                </div>
+              ) : (
+                <div className="max-h-36 overflow-y-auto space-y-1.5 pr-0.5 custom-scrollbar">
+                  {recentScans.map((scan) => (
+                    <button
+                      key={scan.id}
+                      type="button"
+                      onClick={() => {
+                        setScanInput(scan.code);
+                        processScanQuery(scan.code);
+                      }}
+                      className="w-full text-left p-2 rounded-xl bg-slate-50 hover:bg-blue-50/70 dark:bg-slate-800/50 dark:hover:bg-blue-950/40 border border-slate-200/80 dark:border-slate-700/60 hover:border-blue-300 dark:hover:border-blue-700 transition-all flex items-center justify-between gap-2 group"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <div className="w-6 h-6 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0 text-slate-600 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                          {scan.type === 'student' ? (
+                            <User className="w-3 h-3 text-emerald-500" />
+                          ) : scan.scanMode === 'rfid' ? (
+                            <Radio className="w-3 h-3 text-amber-500" />
+                          ) : scan.scanMode === 'qrcode' ? (
+                            <QrCode className="w-3 h-3 text-blue-500" />
+                          ) : (
+                            <Barcode className="w-3 h-3 text-slate-700 dark:text-slate-300" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                            {scan.title}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                            <span className="font-semibold text-slate-700 dark:text-slate-300 truncate">{scan.code}</span>
+                            {scan.badge && (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-slate-200/70 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 shrink-0">
+                                {scan.badge}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 flex flex-col items-end pl-1">
+                        <span className="text-[10px] font-mono text-slate-400">{scan.timestamp}</span>
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+                          Load →
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 font-mono">
