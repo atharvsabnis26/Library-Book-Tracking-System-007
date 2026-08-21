@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+#html5qr-code-reader {
+  border: none !important;
+}
+
+#html5qr-code-reader video {
+  width: 100% !important;
+  max-height: 240px !important;
+  object-fit: cover !important;
+  border-radius: 0.5rem !important;
+}
+
+#html5qr-code-reader__scan_region {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+#html5qr-code-reader__scan_region video {
+  border-radius: 0.5rem !important;
+}

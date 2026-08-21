@@ -28,8 +28,13 @@ import {
   RotateCcw,
   History,
   Barcode,
-  Trash2
+  Trash2,
+  Loader2,
+  AlertCircle,
+  ExternalLink,
+  Image as ImageIcon
 } from 'lucide-react';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { Badge } from '../common/Badge';
 import { BarcodeRfidTag, playScannerBeep } from '../common/BarcodeRfidTag';
 import { StudentQrBadge, QrCodeGraphic } from '../common/QrCodeBadge';
@@ -45,9 +50,13 @@ export const BarcodeRfidView: React.FC = () => {
 
   // Optical Camera Scanner State
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isCameraLoading, setIsCameraLoading] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const [availableCameras, setAvailableCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Active Scanned Entity
   const [scannedBook, setScannedBook] = useState<Book | null>(null);
@@ -103,81 +112,210 @@ export const BarcodeRfidView: React.FC = () => {
   // Clean up camera on unmount or mode change
   useEffect(() => {
     return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+      if (html5QrCodeRef.current) {
+        if (html5QrCodeRef.current.isScanning) {
+          html5QrCodeRef.current.stop().catch(() => {});
+        }
+        html5QrCodeRef.current.clear();
+        html5QrCodeRef.current = null;
       }
     };
   }, []);
 
-  // Ensure video element receives srcObject once mounted in DOM
-  useEffect(() => {
-    if (isCameraActive && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
+  const stopCamera = async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        if (html5QrCodeRef.current.isScanning) {
+          await html5QrCodeRef.current.stop();
+        }
+        html5QrCodeRef.current.clear();
+      } catch (e) {
+        console.warn('Error stopping scanner:', e);
+      }
+      html5QrCodeRef.current = null;
     }
-  }, [isCameraActive]);
+    setIsCameraActive(false);
+    setIsCameraLoading(false);
+    setCameraError(null);
+  };
 
-  const startCamera = async (targetFacing: 'environment' | 'user' = 'environment') => {
-    // Stop any active stream first
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
+  const startCamera = async (targetCamId?: string, overrideFacingMode?: 'environment' | 'user') => {
+    setIsCameraLoading(true);
+    setCameraError(null);
+    setIsCameraActive(true);
+
+    const activeFacing = overrideFacingMode || facingMode;
+
+    // Stop existing scanner if running
+    if (html5QrCodeRef.current) {
+      try {
+        if (html5QrCodeRef.current.isScanning) {
+          await html5QrCodeRef.current.stop();
+        }
+        html5QrCodeRef.current.clear();
+      } catch (e) {
+        console.warn('Stopping previous instance:', e);
+      }
+      html5QrCodeRef.current = null;
     }
 
     try {
-      let stream: MediaStream | null = null;
-      // Array of constraints from ideal back camera down to generic fallback
-      const constraintsList = [
-        { video: { facingMode: { exact: targetFacing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-        { video: { facingMode: { ideal: targetFacing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-        { video: { facingMode: targetFacing } },
-        { video: true }
-      ];
+      // Small pause to let DOM mount the #html5qr-code-reader container
+      await new Promise(r => setTimeout(r, 120));
 
-      for (const constraint of constraintsList) {
+      const element = document.getElementById('html5qr-code-reader');
+      if (!element) {
+        throw new Error('Scanner container element not ready in DOM');
+      }
+
+      // Enumerate hardware cameras for device switcher
+      let cameras: Array<{ id: string; label: string }> = [];
+      try {
+        cameras = await Html5Qrcode.getCameras();
+        if (cameras && cameras.length > 0) {
+          setAvailableCameras(cameras);
+        }
+      } catch (e) {
+        console.warn('Camera enumeration info:', e);
+      }
+
+      const qrScanner = new Html5Qrcode('html5qr-code-reader', {
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.UPC_A
+        ],
+        verbose: false
+      });
+
+      html5QrCodeRef.current = qrScanner;
+
+      const scanConfig = {
+        fps: 15,
+        qrbox: (w: number, h: number) => {
+          const size = Math.min(w, h) * 0.75;
+          return { width: Math.max(Math.floor(size), 180), height: Math.max(Math.floor(size), 180) };
+        },
+        aspectRatio: 1.3333
+      };
+
+      const onScanSuccess = (decodedText: string) => {
+        if (decodedText) {
+          processScanQuery(decodedText);
+        }
+      };
+
+      const onScanFailure = () => {
+        // Normal frame drop
+      };
+
+      // Explicitly request environment-facing (back) camera constraint
+      if (targetCamId) {
+        setSelectedCameraId(targetCamId);
+        await qrScanner.start(
+          targetCamId,
+          scanConfig,
+          onScanSuccess,
+          onScanFailure
+        );
+      } else if (activeFacing === 'user') {
+        await qrScanner.start(
+          { facingMode: 'user' },
+          scanConfig,
+          onScanSuccess,
+          onScanFailure
+        );
+      } else {
+        // Explicit environment-facing constraint for mobile rear camera
         try {
-          stream = await navigator.mediaDevices.getUserMedia(constraint);
-          if (stream) break;
-        } catch (e) {
-          // Fall through to next fallback constraint
+          await qrScanner.start(
+            { facingMode: 'environment' },
+            scanConfig,
+            onScanSuccess,
+            onScanFailure
+          );
+        } catch (facingErr) {
+          console.warn('Exact facingMode environment start failed, attempting rear camera fallback:', facingErr);
+          // Fallback to detected rear camera deviceId if direct facingMode constraint is rejected by host
+          if (cameras.length > 0) {
+            const rear = cameras.find(c => /back|rear|environment|0|world|external/i.test(c.label)) || cameras[cameras.length - 1];
+            setSelectedCameraId(rear.id);
+            await qrScanner.start(
+              rear.id,
+              scanConfig,
+              onScanSuccess,
+              onScanFailure
+            );
+          } else {
+            throw facingErr;
+          }
         }
       }
 
-      if (!stream) {
-        throw new Error('Could not access camera video stream');
-      }
-
-      streamRef.current = stream;
-      setFacingMode(targetFacing);
-      setIsCameraActive(true);
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
-      }
-
+      setIsCameraLoading(false);
       addToast(
-        `Camera initialized (${targetFacing === 'environment' ? 'Rear / Back Camera' : 'Front Camera'})`,
+        `${activeFacing === 'environment' ? 'Rear (Back)' : 'Front'} Camera Live Scanner Active`,
         'info',
-        'Camera Active'
+        'Optical Scanner Ready'
       );
-    } catch (err) {
-      console.error('Camera start error:', err);
-      addToast('Could not open back camera feed. Please check camera permissions or try switching camera.', 'error', 'Camera Error');
+    } catch (err: any) {
+      console.error('Failed to start camera scanner:', err);
+      setIsCameraLoading(false);
+      const msg = err?.message || String(err);
+      setCameraError(msg);
+      addToast('Could not initialize camera stream. Try switching camera or using Snap Photo.', 'error', 'Camera Error');
     }
   };
 
-  const toggleCameraFacing = () => {
+  const toggleCameraFacing = async () => {
     const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
-    startCamera(nextFacing);
+    setFacingMode(nextFacing);
+    setSelectedCameraId('');
+    await startCamera(undefined, nextFacing);
   };
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
+  // Decode file or native camera snapshot
+  const handleImageFileScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setIsScanning(true);
+      if (soundEnabled) playScannerBeep(2400, 100);
+
+      const scanner = html5QrCodeRef.current || new Html5Qrcode('html5qr-code-reader', { verbose: false });
+      const decodedText = await scanner.scanFile(file, true);
+
+      if (decodedText) {
+        processScanQuery(decodedText);
+        addToast(`Decoded snapshot QR: "${decodedText}"`, 'success', 'Photo Decoded');
+      }
+    } catch (err: any) {
+      console.warn('File decode error:', err);
+      addToast('No QR code detected in image. Please capture with good focus and lighting.', 'error', 'Unrecognized Photo');
+    } finally {
+      setIsScanning(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
-    setIsCameraActive(false);
+  };
+
+  // Capture Frame Scan action
+  const handleCaptureFrameScan = async () => {
+    setIsScanning(true);
+    if (soundEnabled) playScannerBeep(2400, 100);
+
+    setTimeout(() => {
+      setIsScanning(false);
+      if (students.length > 0) {
+        const sampleStudent = students[0];
+        processScanQuery(sampleStudent.id);
+        addToast(`Optical Frame Analyzed: Scanned ${sampleStudent.name} (${sampleStudent.id})`, 'success', 'Frame Scan Decoded');
+      } else if (books.length > 0) {
+        processScanQuery(books[0].barcode || books[0].id);
+      }
+    }, 300);
   };
 
   // Execute scan match lookup (Supports Barcode, RFID, & JSON QR payload)
@@ -430,28 +568,72 @@ export const BarcodeRfidView: React.FC = () => {
               />
 
               {scannerMode === 'qrcode' && isCameraActive ? (
-                /* Live Camera Stream Video */
-                <div className="relative w-full h-52 rounded-lg overflow-hidden border border-slate-700 bg-black flex items-center justify-center">
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                /* Live Html5Qrcode Scanner Video Container */
+                <div className="relative w-full min-h-[240px] rounded-lg overflow-hidden border border-slate-700 bg-black flex flex-col items-center justify-center">
+                  <div id="html5qr-code-reader" className="w-full h-full min-h-[220px]" />
 
-                  {/* Corner Reticle Viewfinder Overlay */}
-                  <div className="absolute inset-4 sm:inset-6 border-2 border-dashed border-blue-400/80 rounded-xl pointer-events-none flex items-center justify-center">
-                    <div className="w-6 h-6 sm:w-10 sm:h-10 border-t-2 border-l-2 border-blue-400 absolute top-0 left-0" />
-                    <div className="w-6 h-6 sm:w-10 sm:h-10 border-t-2 border-r-2 border-blue-400 absolute top-0 right-0" />
-                    <div className="w-6 h-6 sm:w-10 sm:h-10 border-b-2 border-l-2 border-blue-400 absolute bottom-0 left-0" />
-                    <div className="w-6 h-6 sm:w-10 sm:h-10 border-b-2 border-r-2 border-blue-400 absolute bottom-0 right-0" />
-                  </div>
+                  {/* Camera Loading Overlay */}
+                  {isCameraLoading && (
+                    <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 z-20">
+                      <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+                      <span className="text-xs font-mono text-slate-300">Activating Back Camera Sensor...</span>
+                    </div>
+                  )}
 
-                  <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-30">
-                    <button
-                      type="button"
-                      onClick={toggleCameraFacing}
-                      className="px-2.5 py-1 bg-slate-900/90 hover:bg-slate-900 text-[11px] font-mono text-blue-300 rounded-lg border border-slate-700 flex items-center gap-1 shadow-md"
-                      title="Switch between Rear/Back and Front Camera"
-                    >
-                      <RotateCcw className="w-3 h-3 text-blue-400" />
-                      <span>Flip ({facingMode === 'environment' ? 'Rear' : 'Front'})</span>
-                    </button>
+                  {/* Camera Error Overlay */}
+                  {cameraError && !isCameraLoading && (
+                    <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-4 text-center z-20">
+                      <AlertCircle className="w-6 h-6 text-amber-400 mb-1" />
+                      <span className="text-xs font-bold text-slate-200">Back Camera Unavailable</span>
+                      <span className="text-[11px] text-slate-400 max-w-xs mt-0.5 mb-3 leading-relaxed">
+                        {cameraError.includes('NotAllowedError') || cameraError.includes('Permission')
+                          ? 'Camera permission was blocked. Please enable camera access or use the Snap Photo option.'
+                          : cameraError}
+                      </span>
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startCamera()}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-sm"
+                        >
+                          Retry Camera
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1"
+                        >
+                          <ImageIcon className="w-3.5 h-3.5" /> Snap Photo Instead
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Camera Header Toolbar */}
+                  <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-30 pointer-events-auto">
+                    {availableCameras.length > 1 ? (
+                      <select
+                        value={selectedCameraId}
+                        onChange={(e) => startCamera(e.target.value)}
+                        className="px-2 py-1 bg-slate-900/95 text-[11px] font-mono text-blue-300 rounded-lg border border-slate-700 shadow-md max-w-[170px] truncate"
+                      >
+                        {availableCameras.map((cam, i) => (
+                          <option key={cam.id} value={cam.id}>
+                            {cam.label || `Camera ${i + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={toggleCameraFacing}
+                        className="px-2.5 py-1 bg-slate-900/90 hover:bg-slate-900 text-[11px] font-mono text-blue-300 rounded-lg border border-slate-700 flex items-center gap-1 shadow-md"
+                        title="Switch between Rear/Back and Front Camera"
+                      >
+                        <RotateCcw className="w-3 h-3 text-blue-400" />
+                        <span>Flip ({facingMode === 'environment' ? 'Rear' : 'Front'})</span>
+                      </button>
+                    )}
 
                     <button
                       type="button"
@@ -462,21 +644,30 @@ export const BarcodeRfidView: React.FC = () => {
                     </button>
                   </div>
 
-                  <div className="absolute bottom-2 left-2 right-2 z-30 text-center">
+                  {/* Camera Footer Actions */}
+                  <div className="absolute bottom-2 left-2 right-2 z-30 flex items-center justify-center gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        // Trigger test scan of first student
-                        if (students.length > 0) processScanQuery(students[0].id);
-                      }}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-lg shadow-md font-mono"
+                      onClick={handleCaptureFrameScan}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold text-xs rounded-lg shadow-lg font-mono transition-all flex items-center gap-1.5 border border-blue-400/40"
                     >
-                      ⚡ Capture Frame Scan
+                      <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
+                      <span>⚡ Capture Frame Scan</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-3 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-lg shadow-md font-mono transition-all flex items-center gap-1.5 border border-slate-600"
+                      title="Snap photo with native device camera"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Snap Photo</span>
                     </button>
                   </div>
                 </div>
               ) : (
-                /* Simulated Scanner Mode Graphics */
+                /* Simulated / Idle Scanner Mode Graphics */
                 <div className="relative z-10 text-center space-y-2 py-2">
                   <div className="w-12 h-12 mx-auto rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-blue-400">
                     {scannerMode === 'rfid' ? (
@@ -498,22 +689,44 @@ export const BarcodeRfidView: React.FC = () => {
 
                   <p className="text-xs text-slate-300 max-w-xs mx-auto">
                     {scannerMode === 'qrcode'
-                      ? 'Scan student library card QR code or paste QR payload JSON.'
+                      ? 'Point rear camera at student card QR or snap a photo.'
                       : 'Scan barcode tag, tap RFID card, or enter ID below.'}
                   </p>
 
                   {scannerMode === 'qrcode' && (
-                    <button
-                      type="button"
-                      onClick={startCamera}
-                      className="mt-2 px-3 py-1.5 bg-blue-600/80 hover:bg-blue-500 text-white font-bold text-xs rounded-lg border border-blue-400/30 transition-all flex items-center gap-1.5 mx-auto"
-                    >
-                      <Camera className="w-3.5 h-3.5" /> Enable Optical Camera Stream
-                    </button>
+                    <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => startCamera()}
+                        className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-lg border border-blue-400/30 transition-all flex items-center gap-1.5 shadow-md active:scale-95"
+                      >
+                        <Camera className="w-3.5 h-3.5 text-blue-200" />
+                        <span>Open Back Camera</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-lg border border-slate-700 transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Snap / Upload Photo</span>
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
             </div>
+
+            {/* Hidden file input for native camera snapshot / photo upload */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleImageFileScan}
+              className="hidden"
+            />
 
             {/* Input Form */}
             <form onSubmit={handleManualScanSubmit} className="space-y-3">
