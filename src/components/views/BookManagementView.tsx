@@ -3,6 +3,8 @@ import { useLibrary } from '../../context/LibraryContext';
 import { Book, Category } from '../../types';
 import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
+import { GoogleSearchGroundingModal } from '../common/GoogleSearchGroundingModal';
+import { BookSearchInsightsModal } from '../common/BookSearchInsightsModal';
 import {
   Plus,
   Search,
@@ -14,7 +16,11 @@ import {
   BookOpen,
   Layers,
   MapPin,
-  Barcode
+  Barcode,
+  Globe,
+  Sparkles,
+  Loader2,
+  Zap
 } from 'lucide-react';
 
 const CATEGORIES: Category[] = [
@@ -28,7 +34,7 @@ const CATEGORIES: Category[] = [
 ];
 
 export const BookManagementView: React.FC = () => {
-  const { books, addBook, updateBook, deleteBook, setActiveTab } = useLibrary();
+  const { books, addBook, updateBook, deleteBook, setActiveTab, addToast } = useLibrary();
 
   // Controls
   const [searchTerm, setSearchTerm] = useState('');
@@ -41,6 +47,15 @@ export const BookManagementView: React.FC = () => {
   const [isAddEditOpen, setIsAddEditOpen] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [viewingBook, setViewingBook] = useState<Book | null>(null);
+
+  // Search Grounding Modals
+  const [isSearchGroundingOpen, setIsSearchGroundingOpen] = useState(false);
+  const [groundingQuery, setGroundingQuery] = useState('');
+  const [selectedBookForInsights, setSelectedBookForInsights] = useState<Book | null>(null);
+
+  // Autofill state
+  const [autofillQuery, setAutofillQuery] = useState('');
+  const [isAutofilling, setIsAutofilling] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<Omit<Book, 'status'>>({
@@ -58,6 +73,7 @@ export const BookManagementView: React.FC = () => {
 
   const handleOpenAdd = () => {
     setEditingBook(null);
+    setAutofillQuery('');
     setFormData({
       id: 'BK-' + Math.floor(100 + Math.random() * 900),
       title: '',
@@ -75,6 +91,7 @@ export const BookManagementView: React.FC = () => {
 
   const handleOpenEdit = (book: Book) => {
     setEditingBook(book);
+    setAutofillQuery('');
     setFormData({
       id: book.id,
       title: book.title,
@@ -88,6 +105,50 @@ export const BookManagementView: React.FC = () => {
       locationRack: book.locationRack || 'A1-R01'
     });
     setIsAddEditOpen(true);
+  };
+
+  // Live Google Search Grounded Autofill
+  const handleAutofillWithGoogleSearch = async () => {
+    const query = autofillQuery.trim() || formData.title.trim() || formData.isbn.trim();
+    if (!query) {
+      addToast('Please enter a Title, ISBN, or Subject to search Google', 'warning', 'Missing Query');
+      return;
+    }
+
+    setIsAutofilling(true);
+    try {
+      const res = await fetch('/api/ai/catalog-autofill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      if (!data.success || !data.data) {
+        throw new Error(data.error || 'Failed to retrieve book facts from Google Search');
+      }
+
+      const bookFacts = data.data;
+      setFormData(prev => ({
+        ...prev,
+        title: bookFacts.title || prev.title || query,
+        author: bookFacts.author || prev.author || 'Unknown',
+        category: (CATEGORIES.includes(bookFacts.category) ? bookFacts.category : prev.category) as Category,
+        isbn: bookFacts.isbn || prev.isbn,
+        publicationYear: bookFacts.publicationYear || prev.publicationYear || 2024,
+        locationRack: bookFacts.locationRack || prev.locationRack || 'A1-R01'
+      }));
+
+      if (data.quotaExceeded) {
+        addToast(`Autofilled facts for "${bookFacts.title || query}" via Academic Knowledge Base`, 'info', 'Catalog Autofill');
+      } else {
+        addToast(`Autofilled facts for "${bookFacts.title || query}" via Google Search`, 'success', 'Google Search Grounded');
+      }
+    } catch (err: any) {
+      console.error('Autofill error:', err);
+      addToast(err?.message || 'Failed to autofill using Google Search', 'error', 'Autofill Error');
+    } finally {
+      setIsAutofilling(false);
+    }
   };
 
   const handleSubmitForm = (e: React.FormEvent) => {
@@ -167,13 +228,26 @@ export const BookManagementView: React.FC = () => {
             </p>
           </div>
 
-          <button
-            onClick={handleOpenAdd}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-md shadow-indigo-600/30 transition-all shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add New Book</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => {
+                setGroundingQuery('Latest academic textbooks and syllabus recommendations for Engineering & Sciences');
+                setIsSearchGroundingOpen(true);
+              }}
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-bold text-xs border border-blue-200 dark:border-blue-800 shadow-sm transition-all"
+            >
+              <Globe className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <span>Google Search Grounding Desk</span>
+            </button>
+
+            <button
+              onClick={handleOpenAdd}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-md shadow-indigo-600/30 transition-all shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add New Book</span>
+            </button>
+          </div>
         </div>
 
         {/* Filter and Search Bar */}
@@ -316,6 +390,15 @@ export const BookManagementView: React.FC = () => {
                     </td>
 
                     <td className="p-4 text-right space-x-1">
+                      {/* Live Google Search Insights Action */}
+                      <button
+                        onClick={() => setSelectedBookForInsights(book)}
+                        title="Live Google Search Insights"
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors"
+                      >
+                        <Globe className="w-4 h-4 text-blue-500" />
+                      </button>
+
                       <button
                         onClick={() => setViewingBook(book)}
                         title="View Details"
@@ -358,168 +441,212 @@ export const BookManagementView: React.FC = () => {
         onClose={() => setIsAddEditOpen(false)}
         title={editingBook ? `Edit Book (${editingBook.id})` : 'Add New Book to Inventory'}
       >
-        <form onSubmit={handleSubmitForm} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Book ID *
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.id}
-                onChange={e => setFormData({ ...formData, id: e.target.value })}
-                disabled={!!editingBook}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
-              />
+        <div className="space-y-4">
+          {/* Live Google Search Grounded Autofill Bar */}
+          {!editingBook && (
+            <div className="p-3 rounded-xl bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-blue-500/10 border border-blue-300 dark:border-blue-800/60 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  Google Search Grounded Autofill
+                </span>
+                <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 font-semibold">
+                  gemini-3.7-flash
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={autofillQuery}
+                  onChange={e => setAutofillQuery(e.target.value)}
+                  placeholder="Enter book title or ISBN (e.g., Clean Code, 978-0132350884)..."
+                  className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAutofillWithGoogleSearch}
+                  disabled={isAutofilling || (!autofillQuery.trim() && !formData.title.trim())}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1 shrink-0 shadow-sm transition-all"
+                >
+                  {isAutofilling ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Searching...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-3.5 h-3.5 text-yellow-300" />
+                      <span>Autofill</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmitForm} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Book ID *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.id}
+                  onChange={e => setFormData({ ...formData, id: e.target.value })}
+                  disabled={!!editingBook}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Category *
+                </label>
+                <select
+                  value={formData.category}
+                  onChange={e => setFormData({ ...formData, category: e.target.value as Category })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {CATEGORIES.map(cat => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Category *
+                Book Title *
               </label>
-              <select
-                value={formData.category}
-                onChange={e => setFormData({ ...formData, category: e.target.value as Category })}
+              <input
+                type="text"
+                required
+                value={formData.title}
+                onChange={e => setFormData({ ...formData, title: e.target.value })}
                 className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Author *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.author}
+                  onChange={e => setFormData({ ...formData, author: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  ISBN Code
+                </label>
+                <input
+                  type="text"
+                  value={formData.isbn}
+                  onChange={e => setFormData({ ...formData, isbn: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Pub Year
+                </label>
+                <input
+                  type="number"
+                  value={formData.publicationYear}
+                  onChange={e => setFormData({ ...formData, publicationYear: parseInt(e.target.value) || 2024 })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Total Qty
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formData.quantity}
+                  onChange={e => {
+                    const qty = parseInt(e.target.value) || 1;
+                    setFormData({ ...formData, quantity: qty, availableCopies: Math.min(formData.availableCopies, qty) });
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Available
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max={formData.quantity}
+                  value={formData.availableCopies}
+                  onChange={e => setFormData({ ...formData, availableCopies: parseInt(e.target.value) || 0 })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Rack Location
+                </label>
+                <input
+                  type="text"
+                  value={formData.locationRack}
+                  onChange={e => setFormData({ ...formData, locationRack: e.target.value })}
+                  placeholder="e.g. A1-R02"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                  Cover Image URL
+                </label>
+                <input
+                  type="text"
+                  value={formData.coverUrl}
+                  onChange={e => setFormData({ ...formData, coverUrl: e.target.value })}
+                  placeholder="https://..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsAddEditOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200"
               >
-                {CATEGORIES.map(cat => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-md shadow-indigo-600/30"
+              >
+                {editingBook ? 'Save Changes' : 'Add Book Node'}
+              </button>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-              Book Title *
-            </label>
-            <input
-              type="text"
-              required
-              value={formData.title}
-              onChange={e => setFormData({ ...formData, title: e.target.value })}
-              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Author *
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.author}
-                onChange={e => setFormData({ ...formData, author: e.target.value })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                ISBN Code
-              </label>
-              <input
-                type="text"
-                value={formData.isbn}
-                onChange={e => setFormData({ ...formData, isbn: e.target.value })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Pub Year
-              </label>
-              <input
-                type="number"
-                value={formData.publicationYear}
-                onChange={e => setFormData({ ...formData, publicationYear: parseInt(e.target.value) || 2024 })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Total Qty
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={formData.quantity}
-                onChange={e => {
-                  const qty = parseInt(e.target.value) || 1;
-                  setFormData({ ...formData, quantity: qty, availableCopies: Math.min(formData.availableCopies, qty) });
-                }}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Available
-              </label>
-              <input
-                type="number"
-                min="0"
-                max={formData.quantity}
-                value={formData.availableCopies}
-                onChange={e => setFormData({ ...formData, availableCopies: parseInt(e.target.value) || 0 })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Rack Location
-              </label>
-              <input
-                type="text"
-                value={formData.locationRack}
-                onChange={e => setFormData({ ...formData, locationRack: e.target.value })}
-                placeholder="e.g. A1-R02"
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                Cover Image URL
-              </label>
-              <input
-                type="text"
-                value={formData.coverUrl}
-                onChange={e => setFormData({ ...formData, coverUrl: e.target.value })}
-                placeholder="https://..."
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-
-          <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setIsAddEditOpen(false)}
-              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-md shadow-indigo-600/30"
-            >
-              {editingBook ? 'Save Changes' : 'Add Book Node'}
-            </button>
-          </div>
-        </form>
+          </form>
+        </div>
       </Modal>
 
       {/* View Book Details Modal */}
@@ -550,50 +677,42 @@ export const BookManagementView: React.FC = () => {
                   <span>•</span>
                   <span>ISBN: {viewingBook.isbn}</span>
                   <span>•</span>
-                  <span>Pub: {viewingBook.publicationYear}</span>
+                  <span>Rack: {viewingBook.locationRack}</span>
+                </div>
+
+                <div className="pt-3">
+                  <button
+                    onClick={() => {
+                      const b = viewingBook;
+                      setViewingBook(null);
+                      setSelectedBookForInsights(b);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-sm transition-all"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-cyan-200" />
+                    <span>View Real-Time Google Search Insights</span>
+                  </button>
                 </div>
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/80">
-                <div className="text-xs text-slate-400 font-mono">Total Stock</div>
-                <div className="font-extrabold text-slate-900 dark:text-slate-100 text-lg">{viewingBook.quantity}</div>
-              </div>
-              <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50">
-                <div className="text-xs text-emerald-600 dark:text-emerald-400 font-mono">Available</div>
-                <div className="font-extrabold text-emerald-700 dark:text-emerald-300 text-lg">{viewingBook.availableCopies}</div>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/80">
-                <div className="text-xs text-slate-400 font-mono">Rack Location</div>
-                <div className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1 mt-0.5">
-                  <MapPin className="w-3.5 h-3.5 text-indigo-500" /> {viewingBook.locationRack || 'Main Shelf'}
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-800/40 text-xs text-indigo-200 space-y-1">
-              <div className="font-mono font-bold text-indigo-300 flex items-center gap-1.5">
-                <Layers className="w-4 h-4" /> Data Structures Representation:
-              </div>
-              <p>• Array Slot Index: Internal contiguous memory block</p>
-              <p>• Linked List Node Address: 0x{Math.floor(Math.random() * 0xffff).toString(16).toUpperCase()}</p>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                onClick={() => {
-                  setViewingBook(null);
-                  setActiveTab('issue');
-                }}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md"
-              >
-                Issue This Book
-              </button>
             </div>
           </div>
         )}
       </Modal>
+
+      {/* Google Search Grounding Research Modal */}
+      <GoogleSearchGroundingModal
+        isOpen={isSearchGroundingOpen}
+        onClose={() => setIsSearchGroundingOpen(false)}
+        initialQuery={groundingQuery}
+      />
+
+      {/* Book-Specific Search Insights Modal */}
+      <BookSearchInsightsModal
+        book={selectedBookForInsights}
+        isOpen={!!selectedBookForInsights}
+        onClose={() => setSelectedBookForInsights(null)}
+      />
     </div>
   );
 };
+

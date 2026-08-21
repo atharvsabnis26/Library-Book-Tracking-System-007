@@ -394,7 +394,7 @@ export const BarcodeRfidView: React.FC = () => {
           type: 'student' as const,
           scanMode: scannerMode,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          badge: matchedStudent.year || 'Student'
+          badge: matchedStudent.department || 'Student'
         };
         setRecentScans(prev => [newRecord, ...prev.filter(item => item.code.toLowerCase() !== newRecord.code.toLowerCase())].slice(0, 5));
       } else {
